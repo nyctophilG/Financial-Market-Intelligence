@@ -1,0 +1,43 @@
+# =========================
+# 1. Python & Environments
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# =========================
+# 2. Vector Database (CRITICAL)
+# =========================
+# Do NOT upload your local Chroma embeddings to GitHub!
+chroma_db/
+local_financial_db/
+
+# =========================
+# 3. Data & Output Files
+# =========================
+# Ignore raw SEC PDFs or massive text files
+data/raw/*
+data/processed/*
+*.pdf
+*.csv
+*.xlsx
+*.json
+# (Optional) Keep the folders but ignore the files inside them
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# =========================
+# 4. Logs & CrewAI Artifacts
+# =========================
+*.log
+agent_outputs/
+
+# =========================
+# 5. OS & Editor Specific
+# =========================
+.vscode/
+.idea/
+.DS_Store

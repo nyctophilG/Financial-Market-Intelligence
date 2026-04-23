@@ -24,7 +24,7 @@ Our multi-agent pipeline operates sequentially to guarantee data integrity:
 ## Tech Stack
 This project runs entirely on local, open-source infrastructure:
 * **Agent Framework:** CrewAI + LangChain
-* **LLM Engine:** Llama 3 (8B) running locally via Ollama
+* **LLM Engine:** Llama 3.1 (8B) running locally via Ollama
 * **Vector Database:** ChromaDB (Local Persistent)
 * **Embeddings:** HuggingFace (`all-MiniLM-L6-v2`)
 * **User Interface:** Streamlit

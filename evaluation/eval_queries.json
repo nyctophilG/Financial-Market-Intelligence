@@ -1,0 +1,27 @@
+[
+  {
+    "question": "Apple Q3 2023 total net sales were how much?",
+    "expected_answer": "81.8 billion",
+    "relevant_doc": "AAPL_Q3_2023"
+  },
+  {
+    "question": "Apple Q3 2023 iPhone revenue ne kadardı?",
+    "expected_answer": "39.7 billion",
+    "relevant_doc": "AAPL_Q3_2023"
+  },
+  {
+    "question": "Apple Q3 2023 services revenue ne kadardı?",
+    "expected_answer": "21.2 billion",
+    "relevant_doc": "AAPL_Q3_2023"
+  },
+  {
+    "question": "Tesla Q4 2023 kaç araç üretti?",
+    "expected_answer": "494,989",
+    "relevant_doc": "TSLA_Q4_2023"
+  },
+  {
+    "question": "Tesla risk factors nelerdi?",
+    "expected_answer": "supply chain disruptions and battery costs",
+    "relevant_doc": "TSLA_Q4_2023"
+  }
+]

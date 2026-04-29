@@ -1,4 +1,17 @@
 from crewai import Agent, LLM
+import os
+
+def load_prompt(filename):
+    """Dynamically loads prompt text from the prompts directory."""
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    prompt_path = os.path.join(root_dir, 'prompts', 'analyst_prompt.txt')
+    
+    try:
+        with open(prompt_path, 'r', encoding='utf-8') as file:
+            return file.read()
+    except FileNotFoundError:
+        print(f" Warning: {'analyst_prompt.txt'} not found. Falling back to default.")
+        return "You are a helpful AI assistant."
 
 # 1. Define the exact same local LLM engine
 # We use Llama 3.1 because of its superior reasoning and formatting capabilities
@@ -9,20 +22,16 @@ local_llm = LLM(
 
 # 2. Define the Agent
 def create_financial_analyst():
+    # Load Emir's Analyst prompt
+    analyst_backstory = load_prompt('analyst_prompt.txt')
+
     return Agent(
         role='Senior Financial Analyst',
         goal='Analyze raw financial data and synthesize it into a highly structured, professional report.',
-        backstory=(
-            "You are a meticulous financial analyst working for a top-tier investment firm. "
-            "Your job is to take the raw text and numbers provided by the Data Gatherer and "
-            "turn them into a clean, readable summary with clear headings. "
-            "CRITICAL INSTRUCTION: You must NEVER invent or hallucinate numbers. You only use "
-            "the exact data provided to you in the context. If specific data is missing, you "
-            "explicitly state 'Data not provided'."
-        ),
+        backstory=analyst_backstory,
         verbose=True,
-        allow_delegation=False, # The analyst works alone, no delegating
-        tools=[], # Notice this is empty! It relies entirely on the Gatherer's output
+        allow_delegation=False,
+        tools=[], # Keep this empty! The analyst only reads/writes.
         llm=local_llm
     )
 

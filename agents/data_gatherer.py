@@ -6,6 +6,19 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from pydantic import BaseModel, Field
 from typing import Type
 
+def load_prompt(filename):
+    """Dynamically loads prompt text from the prompts directory."""
+    # Find the root of the project, then point to the prompts folder
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    prompt_path = os.path.join(root_dir, 'prompts', 'gatherer_prompt.txt')
+    
+    try:
+        with open(prompt_path, 'r', encoding='utf-8') as file:
+            return file.read()
+    except FileNotFoundError:
+        print(f" Warning: {'gatherer_prompt.txt'} not found. Falling back to default.")
+        return "You are a helpful AI assistant." # Safe fallback
+
 # 1. Define the LLM
 local_llm = LLM(
     model="ollama/llama3.1", # this is our upgraded LLM 3 to 3.1
@@ -37,25 +50,23 @@ class SearchFinancialDatabaseTool(BaseTool):
 
 # 4. Define the Agent
 def create_data_gatherer():
+    # Load Emir's specific prompt for this agent
+    gatherer_backstory = load_prompt('gatherer_prompt.txt')
+
     return Agent(
         role='Senior Data Gatherer',
-        goal='Accurately retrieve the most relevant financial data and SEC filings based on the user query.',
-        backstory=(
-            "You are a highly skilled financial archivist. Your only job is to use your "
-            "'Search Financial Database' tool to find exact quotes, numbers, and risk factors "
-            "from the company's official documents. You never invent numbers; you only provide "
-            "what the database returns."
-        ),
+        goal='Search the Vector DB to extract precise financial numbers and statements.',
+        backstory=gatherer_backstory,  # <--- HERE IS THE MAGIC
         verbose=True,
         allow_delegation=False,
-        tools=[SearchFinancialDatabaseTool()], # <-- Notice we instantiate the class here!
+        tools=[SearchFinancialDatabaseTool()],
         llm=local_llm
     )
 
 if __name__ == "__main__":
     from crewai import Task, Crew
 
-    print("🧪 Initiating Solo Test Run for Data Gatherer...")
+    print(" Initiating Solo Test Run for Data Gatherer...")
     
     gatherer = create_data_gatherer()
 

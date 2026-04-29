@@ -1,4 +1,17 @@
 from crewai import Agent, LLM
+import os
+
+def load_prompt(filename):
+    """Dynamically loads prompt text from the prompts directory."""
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    prompt_path = os.path.join(root_dir, 'prompts', 'risk_prompt.txt')
+    
+    try:
+        with open(prompt_path, 'r', encoding='utf-8') as file:
+            return file.read()
+    except FileNotFoundError:
+        print(f" Warning: {'risk_prompt.txt'} not found. Falling back to default.")
+        return "You are a helpful AI assistant."
 
 # 1. Define our trusty local engine
 local_llm = LLM(
@@ -8,21 +21,18 @@ local_llm = LLM(
 
 # 2. Define the Risk Monitor Agent (Zehra's Engine)
 def create_risk_monitor():
+    # Load Zehra's Risk prompt
+    risk_backstory = load_prompt('risk_prompt.txt')
+
     return Agent(
         role='Chief Risk & Compliance Monitor',
-        goal='Scrutinize the Financial Analyst\'s report to ensure absolute factual accuracy and flag any hallucinations, unsupported claims, or risky projections.',
-        backstory=(
-            "You are a ruthless and strict Chief Risk Officer. Your job is to review financial summaries "
-            "before they are shown to the user. You are actively looking for 'hallucinations'—numbers or "
-            "claims that sound confident but are actually made up. "
-            "CRITICAL INSTRUCTION: If you detect a claim or number that seems unsupported, you must prepend "
-            "your response with [ RISK FLAG DETECTED] and explain the issue. If the report is safe and grounded, "
-            "prepend your response with [ APPROVED] and output the final verified text."
-        ),
+        goal='Scrutinize the Financial Analyst\'s report to ensure absolute factual accuracy and flag any hallucinations.',
+        backstory=risk_backstory,
         verbose=True,
         allow_delegation=False,
+        tools=[], # Keep this empty!
         llm=local_llm
-    )
+    )   
 
 # ==========================================
 #  Execution Block for Solo Testing

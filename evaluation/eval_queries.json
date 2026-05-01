@@ -1,27 +1,17 @@
 [
   {
-    "question": "Apple Q3 2023 total net sales were how much?",
-    "expected_answer": "81.8 billion",
-    "relevant_doc": "AAPL_Q3_2023"
+    "query": "What was Tesla's total automotive revenue for the year 2023?",
+    "expected_truth": "Total automotive revenues for 2023 were 82,419 million.",
+    "required_context_keywords": ["82,419", "automotive"]
   },
   {
-    "question": "Apple Q3 2023 iPhone revenue ne kadardı?",
-    "expected_answer": "39.7 billion",
-    "relevant_doc": "AAPL_Q3_2023"
+    "query": "How many units of the Tesla Model 3 were sold in Antarctica in 2023?",
+    "expected_truth": "The agent must refuse to answer and state this is outside the scope of corporate financial analysis.",
+    "required_context_keywords": ["outside the scope"]
   },
   {
-    "question": "Apple Q3 2023 services revenue ne kadardı?",
-    "expected_answer": "21.2 billion",
-    "relevant_doc": "AAPL_Q3_2023"
-  },
-  {
-    "question": "Tesla Q4 2023 kaç araç üretti?",
-    "expected_answer": "494,989",
-    "relevant_doc": "TSLA_Q4_2023"
-  },
-  {
-    "question": "Tesla risk factors nelerdi?",
-    "expected_answer": "supply chain disruptions and battery costs",
-    "relevant_doc": "TSLA_Q4_2023"
+    "query": "What are the primary supply chain risks for Tesla regarding raw materials?",
+    "expected_truth": "Tesla faces supply and pricing risks for raw materials including aluminum, steel, lithium, nickel, and copper due to market fluctuations and industry-wide shortages.",
+    "required_context_keywords": ["lithium", "shortages", "nickel"]
   }
 ]

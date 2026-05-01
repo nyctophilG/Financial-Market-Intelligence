@@ -25,6 +25,7 @@ local_llm = LLM(
     base_url="http://localhost:11434"
 )
 
+GLOBAL_EMBEDDINGS = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 CHROMA_PATH = os.path.join(os.path.dirname(__file__), "../chroma_db")
 
 # 2. Define the Strict Schema
@@ -39,9 +40,9 @@ class SearchFinancialDatabaseTool(BaseTool):
 
     def _run(self, query: str) -> str:
         print(f"\n[TOOL EXECUTION] Searching Vector DB for: {query}")
-        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        vector_db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
-        results = vector_db.similarity_search(query, k=3)
+    
+        vector_db = Chroma(persist_directory=CHROMA_PATH, embedding_function=GLOBAL_EMBEDDINGS)
+        results = vector_db.similarity_search(query, k=2)
         
         if not results:
             return "No relevant financial documents found in the database."
@@ -59,6 +60,7 @@ def create_data_gatherer():
         backstory=gatherer_backstory,  # <--- HERE IS THE MAGIC
         verbose=True,
         allow_delegation=False,
+        max_iter=3,
         tools=[SearchFinancialDatabaseTool()],
         llm=local_llm
     )

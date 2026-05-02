@@ -2,9 +2,9 @@ from crewai import Process, Crew, Task
 
 # 1. Import your modular agents
 # (Assuming you run this script from inside the 'agents' folder)
-from data_gatherer import create_data_gatherer
-from financial_analyst import create_financial_analyst
-from risk_monitor import create_risk_monitor
+from agents.data_gatherer import create_data_gatherer
+from agents.financial_analyst import create_financial_analyst
+from agents.risk_monitor import create_risk_monitor
 
 def run_financial_analysis(query: str):
     print(f" Initiating Multi-Agent Pipeline for query: '{query}'\n")

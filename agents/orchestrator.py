@@ -1,5 +1,6 @@
 from crewai import Process, Crew, Task
 
+
 # 1. Import your modular agents
 # (Assuming you run this script from inside the 'agents' folder)
 from agents.data_gatherer import create_data_gatherer
@@ -52,11 +53,16 @@ def run_financial_analysis(query: str):
 
     # 5. Kickoff the pipeline
     result = financial_crew.kickoff()
-    return result
+    
+    # NEW: Extract the raw output from the first task (Data Gatherer)
+    raw_retrieved_data = str(gather_task.output)
+    
+    # Return BOTH so the evaluation script can grade the database accuracy
+    return str(result), raw_retrieved_data
 
 if __name__ == "__main__":
     # The ultimate end-to-end test
-    final_output = run_financial_analysis("Apple AAPL Q3 2023 net sales")
+    final_output = run_financial_analysis("What was Tesla's total automotive revenue for the year 2023?")
     
     print("\n================================================")
     print(" FINAL PIPELINE OUTPUT:")

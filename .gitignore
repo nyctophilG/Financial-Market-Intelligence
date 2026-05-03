@@ -41,3 +41,4 @@ agent_outputs/
 .vscode/
 .idea/
 .DS_Store
+app/chat_history.db

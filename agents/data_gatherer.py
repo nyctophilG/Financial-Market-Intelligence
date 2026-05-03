@@ -1,63 +1,129 @@
 import os
+import re
 from crewai import Agent, LLM
-from crewai.tools import BaseTool # swapp 'tool' for 'BaseTool'
+from crewai.tools import BaseTool
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from pydantic import BaseModel, Field
-from typing import Type
+from typing import Type, Optional
 
-def load_prompt(filename):
-    """Dynamically loads prompt text from the prompts directory."""
-    # Find the root of the project, then point to the prompts folder
+
+def load_prompt(filename: str) -> str:
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    prompt_path = os.path.join(root_dir, 'prompts', 'gatherer_prompt.txt')
-    
+    prompt_path = os.path.join(root_dir, 'prompts', filename)
     try:
-        with open(prompt_path, 'r', encoding='utf-8') as file:
-            return file.read()
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            return f.read()
     except FileNotFoundError:
-        print(f" Warning: {'gatherer_prompt.txt'} not found. Falling back to default.")
-        return "You are a helpful AI assistant." # Safe fallback
+        print(f"Warning: {filename} not found. Using default.")
+        return "You are a helpful AI assistant."
 
-# 1. Define the LLM
+
 local_llm = LLM(
-    model="ollama/llama3.1", # this is our upgraded LLM 3 to 3.1
+    model="ollama/llama3.1",
     base_url="http://localhost:11434"
 )
 
 GLOBAL_EMBEDDINGS = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-CHROMA_PATH = os.path.join(os.path.dirname(__file__), "../chroma_db")
+CHROMA_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "chroma_db"
+)
 
-# 2. Define the Strict Schema
+# Maps company name fragments to the canonical ticker stored in DB metadata.
+TICKER_MAP = {
+    "tesla":     "TSLA", "tsla":   "TSLA",
+    "microsoft": "MSFT", "msft":   "MSFT",
+    "apple":     "AAPL", "aapl":   "AAPL",
+    "amazon":    "AMZN", "amzn":   "AMZN",
+    "alphabet":  "GOOGL","google": "GOOGL", "googl": "GOOGL",
+    "meta":      "META",
+    "nvidia":    "NVDA", "nvda":   "NVDA",
+}
+
+def resolve_ticker(query: str) -> Optional[str]:
+    """Detect which company the query is about and return its ticker."""
+    lower = query.lower()
+    for fragment, ticker in TICKER_MAP.items():
+        if fragment in lower:
+            return ticker
+    return None
+
+
 class SearchQuerySchema(BaseModel):
-    query: str = Field(..., description="The exact text string to search the database with, such as 'Apple Q3 net sales'")
+    query: str = Field(
+        ...,
+        description=(
+            "The exact financial search string. Always include company name "
+            "AND fiscal year, e.g. 'Tesla 2023 total automotive revenues' or "
+            "'Apple fiscal 2025 iPhone net sales'."
+        )
+    )
 
-# 3. Define the Tool as a strict Class (The modern CrewAI way)
+
 class SearchFinancialDatabaseTool(BaseTool):
     name: str = "Search Financial Database"
-    description: str = "Useful for searching the local vector database for SEC filings, risk factors, and financial summaries."
+    description: str = (
+        "Search the local vector database of SEC 10-K filings. "
+        "The database contains filings from MULTIPLE companies. "
+        "Always include the company name AND the fiscal year in your query "
+        "so the correct filing is returned."
+    )
     args_schema: Type[BaseModel] = SearchQuerySchema
 
     def _run(self, query: str) -> str:
-        print(f"\n[TOOL EXECUTION] Searching Vector DB for: {query}")
-    
-        vector_db = Chroma(persist_directory=CHROMA_PATH, embedding_function=GLOBAL_EMBEDDINGS)
-        results = vector_db.similarity_search(query, k=2)
-        
+        print(f"\n[TOOL] Searching DB for: '{query}'")
+
+        vector_db = Chroma(
+            persist_directory=CHROMA_PATH,
+            embedding_function=GLOBAL_EMBEDDINGS
+        )
+
+        ticker = resolve_ticker(query)
+
+        if ticker:
+            # Filtered search — only chunks from the correct company.
+            # This prevents cross-company contamination (e.g. Apple revenue
+            # bleeding into a Tesla query).
+            print(f"[TOOL] Company filter applied: ticker={ticker}")
+            results = vector_db.similarity_search(
+                query,
+                k=6,
+                filter={"ticker": ticker}
+            )
+        else:
+            print("[TOOL] Warning: no company detected — running unfiltered search.")
+            results = vector_db.similarity_search(query, k=6)
+
         if not results:
-            return "No relevant financial documents found in the database."
-        
-        return "\n\n---\n\n".join([doc.page_content for doc in results])
+            return (
+                "No relevant documents found. "
+                "Check that the correct PDF was ingested via ingest_data.py."
+            )
 
-# 4. Define the Agent
+        chunks = []
+        for doc in results:
+            meta = doc.metadata
+            header = (
+                f"[Source: {meta.get('company','?')} | "
+                f"Ticker: {meta.get('ticker','?')} | "
+                f"FY: {meta.get('fiscal_year','?')} | "
+                f"Page: {meta.get('page','?')} | "
+                f"Type: {meta.get('chunk_type','?')}]"
+            )
+            chunks.append(f"{header}\n{doc.page_content}")
+
+        return "\n\n---\n\n".join(chunks)
+
+
 def create_data_gatherer():
-    # Load Emir's specific prompt for this agent
     gatherer_backstory = load_prompt('gatherer_prompt.txt')
-
     return Agent(
         role='Senior Data Gatherer',
-        goal='Search the Vector DB to extract precise financial numbers and statements.',
-        backstory=gatherer_backstory,  # <--- HERE IS THE MAGIC
+        goal=(
+            'Search the multi-company Vector DB to extract precise financial '
+            'numbers and statements for the specific company mentioned in the query.'
+        ),
+        backstory=gatherer_backstory,
         verbose=True,
         allow_delegation=False,
         max_iter=3,
@@ -65,28 +131,24 @@ def create_data_gatherer():
         llm=local_llm
     )
 
+
 if __name__ == "__main__":
     from crewai import Task, Crew
 
-    print(" Initiating Solo Test Run for Data Gatherer...")
-    
+    print("Solo test: multi-company retrieval")
     gatherer = create_data_gatherer()
 
-    test_task = Task(
-        description="Search the database for Apple's (AAPL) Q3 2023 financial summary. What were the exact net sales, and what are the listed risk factors?",
-        expected_output="A short summary containing the exact net sales figure and listed risk factors, pulled directly from the database.",
-        agent=gatherer
-    )
-
-    test_crew = Crew(
-        agents=[gatherer],
-        tasks=[test_task],
-        verbose=True
-    )
-
-    result = test_crew.kickoff()
-
-    print("\n================================================")
-    print(" FINAL AGENT OUTPUT:")
-    print(result)
-    print("================================================")
+    for test_query in [
+        "What was Tesla's total automotive revenues for the year 2023?",
+        "What was Apple's total net sales for fiscal year 2025?",
+        "What was Microsoft's net income for fiscal year 2025?",
+    ]:
+        print(f"\n{'='*60}\nQuery: {test_query}\n{'='*60}")
+        task = Task(
+            description=f"Search the database for: {test_query}",
+            expected_output="Exact figures from the database.",
+            agent=gatherer
+        )
+        crew = Crew(agents=[gatherer], tasks=[task], verbose=False)
+        result = crew.kickoff()
+        print(f"Result: {result}\n")

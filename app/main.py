@@ -1,131 +1,190 @@
 """
-main.py  —  lives at <project_root>/app/main.py
-
-Project layout:
-  <project_root>/
-    app/
-      main.py   ← this file
-      ui.py
-    agents/
-      orchestrator.py
-      data_gatherer.py
-      financial_analyst.py
-      risk_monitor.py
-    data/
-      raw/        ← PDFs saved here
-      processed/  ← CSV / TXT saved here
-    chroma_db/    ← ChromaDB vector store (data_gatherer.py points here)
-    prompts/
+main.py  --  lives at <project_root>/app/main.py
 """
 
 import os
 import sys
-import requests
+import threading
 import warnings
+import requests
 
-# Suppress the noisy transformers __path__ warning
-warnings.filterwarnings("ignore", message=".*__path__.*")
+warnings.filterwarnings("ignore")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# ── Paths ─────────────────────────────────────────────────────
-APP_DIR      = os.path.dirname(os.path.abspath(__file__))   # .../app
-PROJECT_ROOT = os.path.dirname(APP_DIR)                      # .../
+# ── Paths ──────────────────────────────────────────────────────
+APP_DIR      = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(APP_DIR)
 
-# Add project root so `from agents.x import y` works
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-# Data dirs live at project root, NOT inside app/
 RAW_DIR       = os.path.join(PROJECT_ROOT, "data", "raw")
 PROCESSED_DIR = os.path.join(PROJECT_ROOT, "data", "processed")
-CHROMA_DIR    = os.path.join(PROJECT_ROOT, "chroma_db")   # matches data_gatherer.py
+CHROMA_DIR    = os.path.join(PROJECT_ROOT, "chroma_db")
 
 os.makedirs(RAW_DIR,       exist_ok=True)
 os.makedirs(PROCESSED_DIR, exist_ok=True)
 os.makedirs(CHROMA_DIR,    exist_ok=True)
 
-# ── Ollama ─────────────────────────────────────────────────────
 OLLAMA_URL   = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "llama3.1"
 
-# ── Routing keywords ───────────────────────────────────────────
-# These FORCE the CrewAI pipeline regardless of phrasing
-CREWAI_HARD_TRIGGERS = {
-    # Explicit pipeline requests
-    "analyze the file", "analyse the file",
-    "analyze the document", "analyse the document",
-    "analyze this document", "analyse this document",
-    "run analysis", "run financial analysis",
-    "use crewai", "use the agents",
-    "search the database", "search database",
-    "check the filing", "check the file",
-    "summarize the file", "summarize the document",
-    "summarize this file", "summarize this document",
-    "what does the file say", "what does the document say",
-    "from the file", "from the document", "from the filing",
-    "in the file", "in the document",
-    "according to the", "the report says",
-    "read the file", "read the document",
-    # SEC / regulatory
-    "sec filing", "sec report", "10-k", "10k", "10-q", "10q", "8-k", "8k",
-    "annual report", "quarterly report", "earnings report",
-    # Financial statement terms
-    "net sales", "gross profit", "operating income", "net income",
-    "revenue", "ebitda", "eps", "pe ratio", "cash flow",
-    "balance sheet", "income statement", "earnings per share",
-    # Market terms that imply data lookup
-    "stock price", "market cap", "dividend yield", "ipo",
+# ── Singletons -- loaded once per process, thread-safe ─────────
+_lock        = threading.Lock()
+_embeddings  = None
+_chroma_db   = None
+
+def _get_embeddings():
+    global _embeddings
+    if _embeddings is None:
+        with _lock:
+            if _embeddings is None:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    from langchain_huggingface import HuggingFaceEmbeddings
+                    print("[Init] Loading embedding model...")
+                    _embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+                    print("[Init] Embedding model ready.")
+    return _embeddings
+
+def _get_chroma():
+    global _chroma_db
+    if _chroma_db is None:
+        with _lock:
+            if _chroma_db is None:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    from langchain_chroma import Chroma
+                    print("[Init] Connecting to ChromaDB...")
+                    _chroma_db = Chroma(
+                        persist_directory=CHROMA_DIR,
+                        embedding_function=_get_embeddings(),
+                    )
+                    print("[Init] ChromaDB ready.")
+    return _chroma_db
+
+
+# ══════════════════════════════════════════════════════════════
+# Routing triggers
+# ══════════════════════════════════════════════════════════════
+CREWAI_TRIGGERS = {
+    "analyz", "analyse", "analysis",
+    "run analysis", "run the analysis",
+    "use crewai", "use the agents", "use agents",
+    "run pipeline", "pipeline",
+    "financial report", "generate report", "create report",
+    "the file", "this file", "the document", "this document",
+    "the filing", "the report", "from the",
+    "according to", "in the document", "in the file",
+    "summarize the", "summarize this",
+    "read the file", "check the file",
+    "what does the file", "what does the document", "what is in the",
+    "sec", "10-k", "10k", "10-q", "10q", "8-k", "8k",
+    "annual report", "quarterly report", "earnings report", "earnings call",
+    "net sales", "gross profit", "gross margin",
+    "operating income", "operating profit",
+    "net income", "net profit", "net loss",
+    "revenue", "revenues",
+    "ebitda", "ebit",
+    "eps", "earnings per share",
+    "cash flow", "free cash flow",
+    "balance sheet", "income statement", "financial statement",
+    "profit and loss", "p&l",
+    "total assets", "total liabilities", "shareholders equity",
+    "dividend", "dividend yield",
+    "market cap", "market capitalization",
+    "pe ratio", "price to earnings",
+    "ipo", "initial public offering",
     "risk factor", "risk factors",
-    "q1 20", "q2 20", "q3 20", "q4 20",   # e.g. "Q3 2023"
+    "fiscal year", "fiscal quarter",
+    "q1 20", "q2 20", "q3 20", "q4 20",
+    "quarter", "quarterly", "annual", "yearly",
+    "aapl", "goog", "googl", "amzn", "msft", "tsla", "meta",
+    "nvda", "nflx", "baba", "jpm",
 }
-
-# These alone are NOT enough — Ollama handles general finance questions
-OLLAMA_FINANCE_WORDS = {
-    "financial", "finance", "investment", "market", "economy",
-    "inflation", "interest rate", "stock", "equity", "bond",
-    "asset", "portfolio", "hedge", "fund",
-}
-
 
 def is_crewai_query(query: str) -> bool:
-    """
-    Returns True only when the query clearly asks for document/pipeline analysis.
-    General financial chat → Ollama. Document/data queries → CrewAI.
-    """
     lower = query.lower()
-
-    # Check hard triggers (multi-word phrases first for accuracy)
-    sorted_triggers = sorted(CREWAI_HARD_TRIGGERS, key=len, reverse=True)
-    for trigger in sorted_triggers:
+    for trigger in sorted(CREWAI_TRIGGERS, key=len, reverse=True):
         if trigger in lower:
             return True
-
-    # If files are uploaded AND user asks a question about content
-    if _has_uploaded_files():
-        doc_question_words = {"what", "how much", "how many", "show", "tell",
-                              "find", "get", "list", "explain", "describe",
-                              "compare", "which", "when", "where", "who"}
-        words = set(lower.split())
-        # Has question intent AND is not a casual greeting/general statement
-        if words & doc_question_words and len(query.split()) >= 4:
-            # Extra confirmation: mentions a financial noun
-            financial_nouns = {
-                "apple", "google", "amazon", "microsoft", "tesla", "meta",
-                "aapl", "goog", "amzn", "msft", "tsla",
-                "profit", "loss", "sales", "revenue", "income",
-                "liability", "asset", "debt", "equity", "capital",
-            }
-            if words & financial_nouns:
-                return True
-
-    return False
-
-
-def _has_uploaded_files() -> bool:
-    for d in [RAW_DIR, PROCESSED_DIR]:
-        if os.path.isdir(d) and os.listdir(d):
+    if _has_files() and len(query.split()) >= 4:
+        question_words = {"what", "how", "show", "tell", "find",
+                          "get", "list", "explain", "describe",
+                          "compare", "which", "when", "where"}
+        if set(lower.split()) & question_words:
             return True
     return False
+
+def _has_files() -> bool:
+    for d in [RAW_DIR, PROCESSED_DIR]:
+        if os.path.isdir(d) and any(
+            os.path.isfile(os.path.join(d, f)) for f in os.listdir(d)
+        ):
+            return True
+    return False
+
+
+# ══════════════════════════════════════════════════════════════
+# File reading
+# ══════════════════════════════════════════════════════════════
+
+def _read_file(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".pdf":
+        try:
+            import pypdf
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                reader = pypdf.PdfReader(path)
+                text = "\n".join(p.extract_text() or "" for p in reader.pages).strip()
+            if text:
+                print(f"[PDF] pypdf: {len(text)} chars from {os.path.basename(path)}")
+                return text
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"[PDF] pypdf failed: {e}")
+
+        try:
+            import pypdfium2 as pdfium
+            doc   = pdfium.PdfDocument(path)
+            pages = []
+            for page in doc:
+                tp = page.get_textpage()
+                pages.append(tp.get_text_range())
+                tp.close()
+                page.close()
+            doc.close()
+            text = "\n".join(pages).strip()
+            if text:
+                print(f"[PDF] pypdfium2: {len(text)} chars from {os.path.basename(path)}")
+                return text
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"[PDF] pypdfium2 failed: {e}")
+
+        try:
+            import pdfminer.high_level as pm
+            text = pm.extract_text(path).strip()
+            if text:
+                print(f"[PDF] pdfminer: {len(text)} chars from {os.path.basename(path)}")
+                return text
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"[PDF] pdfminer failed: {e}")
+
+        print(f"[PDF] All readers failed for {os.path.basename(path)} -- install pypdf")
+        return ""
+    else:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        except Exception as e:
+            print(f"[File] Read error: {e}")
+            return ""
 
 
 # ══════════════════════════════════════════════════════════════
@@ -133,80 +192,69 @@ def _has_uploaded_files() -> bool:
 # ══════════════════════════════════════════════════════════════
 
 def ingest_to_chroma(file_path: str) -> str:
-    """
-    Chunk a file and embed it into ChromaDB at CHROMA_DIR.
-    Uses the exact same embedding model as data_gatherer.py (all-MiniLM-L6-v2).
-    """
+    fname = os.path.basename(file_path)
+    print(f"[Ingest] Reading {fname}...")
+    content = _read_file(file_path)
+
+    if not content.strip():
+        msg = f"Could not extract text from {fname}. Install pypdf: pip install pypdf"
+        print(f"[Ingest] {msg}")
+        return f"[Ingest] {msg}"
+
+    print(f"[Ingest] {fname}: {len(content)} chars, chunking...")
     try:
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            from langchain_chroma import Chroma
-            from langchain_huggingface import HuggingFaceEmbeddings
-            from langchain_text_splitters import RecursiveCharacterTextSplitter
-            from langchain_core.documents import Document
-
-        fname = os.path.basename(file_path)
-        content = _read_file(file_path)
-
-        if not content or not content.strip():
-            return f"⚠️ {fname} — could not extract text"
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        from langchain_core.documents import Document
 
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=50,
-            separators=["\n\n", "\n", ".", " "],
+            chunk_size=500, chunk_overlap=50,
+            separators=["\n\n", "\n", ". ", " "],
         )
         chunks = splitter.split_text(content)
         if not chunks:
-            return f"⚠️ {fname} — no chunks produced"
+            return f"No chunks from {fname}"
 
         docs = [
-            Document(
-                page_content=chunk,
-                metadata={"source": file_path, "filename": fname},
-            )
-            for chunk in chunks
+            Document(page_content=c, metadata={"source": file_path, "filename": fname})
+            for c in chunks
         ]
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-            db = Chroma(persist_directory=CHROMA_DIR, embedding_function=embeddings)
-            db.add_documents(docs)
+        print(f"[Ingest] {fname}: {len(chunks)} chunks, embedding...")
+        db = _get_chroma()
+        db.add_documents(docs)
 
-        return f"✅ {fname} — {len(chunks)} chunks → ChromaDB"
+        global _chroma_count_cache
+        _chroma_count_cache = None
 
-    except ImportError as e:
-        return (
-            f"❌ Missing package: {e}\n"
-            f"Run: pip install langchain-chroma langchain-huggingface sentence-transformers"
-        )
+        msg = f"[SUCCESS] {fname} -- {len(chunks)} chunks added to ChromaDB"
+        print(f"[Ingest] {msg}")
+        return msg
+
     except Exception as e:
-        return f"❌ {os.path.basename(file_path)}: {e}"
+        import traceback
+        print(f"[Ingest] ERROR:\n{traceback.format_exc()}")
+        return f"[ERROR] {fname}: {e}"
 
 
-def _read_file(path: str) -> str:
+# ── ChromaDB count (cached) ────────────────────────────────────
+_chroma_count_cache = None
+
+def get_chroma_doc_count() -> int:
+    global _chroma_count_cache
+    if _chroma_count_cache is not None:
+        return _chroma_count_cache
     try:
-        if path.lower().endswith(".pdf"):
-            try:
-                from pypdfium2 import PdfReader
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    return "\n".join(p.extract_text() or "" for p in PdfReader(path).pages)
-            except ImportError:
-                pass
-            try:
-                import pdfminer.high_level as pm
-                return pm.extract_text(path)
-            except ImportError:
-                return ""
-        else:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                return f.read()
-    except Exception:
-        return ""
+        db = _get_chroma()
+        _chroma_count_cache = db._collection.count()
+        return _chroma_count_cache
+    except Exception as e:
+        print(f"[ChromaDB] count error: {e}")
+        return -1
+
+def refresh_chroma_count() -> int:
+    global _chroma_count_cache
+    _chroma_count_cache = None
+    return get_chroma_doc_count()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -220,14 +268,11 @@ def call_ollama(prompt: str, system: str = "") -> str:
             payload["system"] = system
         resp = requests.post(OLLAMA_URL, json=payload, timeout=180)
         resp.raise_for_status()
-        return resp.json().get("response", "").strip() or "_(empty response from Ollama)_"
+        return resp.json().get("response", "").strip() or "_(Ollama returned empty)_"
     except requests.exceptions.ConnectionError:
-        return (
-            "⚠️ **Ollama is not running.**\n\n"
-            "```bash\nollama serve\nollama pull llama3.1\n```"
-        )
+        return "Ollama is not running.\n\nStart it:\n```\nollama serve\nollama pull llama3.1\n```"
     except Exception as e:
-        return f"⚠️ Ollama error: `{e}`"
+        return f"Ollama error: {e}"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -235,27 +280,18 @@ def call_ollama(prompt: str, system: str = "") -> str:
 # ══════════════════════════════════════════════════════════════
 
 def run_crewai(query: str) -> dict:
-    """
-    Run the 3-agent CrewAI pipeline.
-    stdout NOT redirected — verbose output prints to terminal as normal.
-    """
     result = {"response": "", "error": ""}
     try:
         from agents.orchestrator import run_financial_analysis
 
-        print(f"\n{'─'*60}")
-        print(f"[CrewAI] Pipeline start: {query[:100]}")
-        print(f"[CrewAI] ChromaDB path:  {CHROMA_DIR}")
-        chroma_count = get_chroma_doc_count()
-        print(f"[CrewAI] ChromaDB docs:  {chroma_count}")
-        print(f"{'─'*60}\n")
+        n = get_chroma_doc_count()
+        print(f"\n[CrewAI] ChromaDB chunks: {n}")
 
-        if chroma_count == 0:
+        if n == 0:
             result["error"] = "no_docs"
             result["response"] = (
-                "⚠️ **ChromaDB is empty — no documents have been ingested yet.**\n\n"
-                "Upload your files using the sidebar and click **'💾 Save & Ingest'** first.\n"
-                "The Data Gatherer agent searches ChromaDB, so files must be ingested before analysis."
+                "ChromaDB is empty.\n\n"
+                "Upload your documents in the sidebar and click 'Save & Ingest' first."
             )
             return result
 
@@ -265,21 +301,20 @@ def run_crewai(query: str) -> dict:
 
         if not result["response"]:
             result["error"] = "empty_output"
-            result["response"] = "_(CrewAI pipeline ran but returned no output — check terminal)_"
+            result["response"] = "Pipeline ran but returned no output -- check terminal."
 
     except ImportError as e:
         result["error"] = str(e)
         result["response"] = (
-            f"🚨 **Import error:** `{e}`\n\n"
-            f"Run Streamlit from the **project root**:\n"
-            f"```bash\ncd <project_root>\nstreamlit run app/ui.py\n```"
+            f"Import error: {e}\n\n"
+            f"Run from project root:\n```\ncd <project_root>\nstreamlit run app/ui.py\n```"
         )
         print(f"[CrewAI ImportError] {e}")
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
         result["error"] = tb
-        result["response"] = f"🚨 **Pipeline error:** `{e}`\n\n```\n{tb[:800]}\n```"
+        result["response"] = f"Pipeline error: {e}\n\n```\n{tb[:800]}\n```"
         print(f"[CrewAI ERROR]\n{tb}")
 
     return result
@@ -294,15 +329,14 @@ def process_query(query: str) -> dict:
         r = run_crewai(query)
         r["route"] = "crewai"
         return r
-
     return {
         "response": call_ollama(
             query,
             system=(
-                "You are a helpful, friendly AI assistant with financial knowledge. "
+                "You are a helpful, friendly AI assistant with financial expertise. "
                 "Answer naturally and conversationally. "
-                "If the user wants to analyze a specific document or file, "
-                "tell them to use keywords like 'analyze the file' or 'run analysis'."
+                "To analyze an uploaded document, use keywords like "
+                "'analyze', 'from the file', or 'revenue'."
             ),
         ),
         "route": "ollama",
@@ -311,17 +345,13 @@ def process_query(query: str) -> dict:
 
 
 def save_uploaded_file(file_bytes: bytes, filename: str) -> tuple:
-    """Save to correct data dir and ingest into ChromaDB. Returns (path, status_msg)."""
-    ext = os.path.splitext(filename)[1].lower()
+    ext      = os.path.splitext(filename)[1].lower()
     dest_dir = RAW_DIR if ext == ".pdf" else PROCESSED_DIR
-    dest = os.path.join(dest_dir, filename)
-
+    dest     = os.path.join(dest_dir, filename)
     with open(dest, "wb") as f:
         f.write(file_bytes)
-
-    msg = ingest_to_chroma(dest)
-    print(f"[Ingest] {msg}")
-    return dest, msg
+    print(f"[Save] Written to {dest}")
+    return dest, ""
 
 
 def list_uploaded_files() -> dict:
@@ -332,24 +362,9 @@ def list_uploaded_files() -> dict:
     return {"raw": ls(RAW_DIR), "processed": ls(PROCESSED_DIR)}
 
 
-def get_chroma_doc_count() -> int:
-    try:
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            from langchain_chroma import Chroma
-            from langchain_huggingface import HuggingFaceEmbeddings
-            embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-            db = Chroma(persist_directory=CHROMA_DIR, embedding_function=embeddings)
-            return db._collection.count()
-    except Exception:
-        return -1
-
-
 if __name__ == "__main__":
-    print(f"Project root : {PROJECT_ROOT}")
-    print(f"ChromaDB     : {CHROMA_DIR}")
-    print(f"ChromaDB docs: {get_chroma_doc_count()}")
+    print(f"Project root: {PROJECT_ROOT}")
+    print(f"ChromaDB:     {CHROMA_DIR} ({get_chroma_doc_count()} chunks)")
     q = input("\nQuery: ").strip()
     if q:
         r = process_query(q)

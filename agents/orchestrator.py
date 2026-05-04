@@ -47,7 +47,7 @@ def extract_tool_output(task_output) -> str:
             return extracted
 
     # Pattern 2: Look for our tool's header format as a reliable anchor
-    match = re.search(r'(\[Source:.*)', raw, re.DOTALL)
+    match = re.search(r'(\[Source:.*?)(?=\nThought:|\nFinal Answer:|$)', raw, re.DOTALL)
     if match:
         extracted = match.group(1).strip()
         if extracted:
@@ -167,7 +167,7 @@ def run_financial_analysis(query: str):
 
 if __name__ == "__main__":
     final_output, raw = run_financial_analysis(
-        "What is the future plans of Tesla?"
+        "Can you give me revenue of Microsoft?"
     )
 
     print("\n================================================")

@@ -11,9 +11,6 @@ Full evaluation pipeline:
 
 Run from the project root:
     python evaluation/eval_runner.py
-
-Or from inside evaluation/:
-    python eval_runner.py
 """
 
 import json
@@ -23,14 +20,10 @@ import re
 import litellm
 
 # ── sys.path setup ────────────────────────────────────────────────────────────
-# This file lives at project_root/evaluation/eval_runner.py.
-# project_root is one dirname up from this file's directory.
-_EVAL_DIR    = os.path.dirname(os.path.abspath(__file__))          # .../evaluation/
-_PROJECT_ROOT = os.path.dirname(_EVAL_DIR)                          # .../project_root/
-_AGENTS_DIR  = os.path.join(_PROJECT_ROOT, "agents")               # .../project_root/agents/
+_EVAL_DIR    = os.path.dirname(os.path.abspath(__file__))          
+_PROJECT_ROOT = os.path.dirname(_EVAL_DIR)                          
+_AGENTS_DIR  = os.path.join(_PROJECT_ROOT, "agents")               
 
-# Add both project root (so "from agents.orchestrator" works) and
-# the evaluation dir (so sibling imports like retrieval_eval work).
 for _path in [_PROJECT_ROOT, _EVAL_DIR]:
     if _path not in sys.path:
         sys.path.insert(0, _path)
@@ -41,8 +34,6 @@ from risk_eval import evaluate_risk_compliance
 
 
 # ── LLM Judge prompt ──────────────────────────────────────────────────────────
-# Each criterion appears EXACTLY ONCE. (Bug fix: old version had "Factual Consistency"
-# listed as both #1 and #4, which produced inconsistent JSON from the judge.)
 JUDGE_PROMPT = """
 You are an impartial, strict Financial AI Evaluator.
 Your job is to compare an Agent's generated report against the Ground Truth facts.
@@ -81,13 +72,17 @@ Output ONLY a JSON object — no preamble, no markdown fences:
 
 def call_judge(prompt: str) -> str:
     """Call the local Ollama judge model via litellm."""
-    response = litellm.completion(
-        model="ollama/llama3.1",
-        messages=[{"role": "user", "content": prompt}],
-        api_base="http://localhost:11434",
-        temperature=0.0
-    )
-    return response.choices[0].message.content
+    try:
+        response = litellm.completion(
+            model="ollama/llama3.1",
+            messages=[{"role": "user", "content": prompt}],
+            api_base="http://localhost:11434",
+            temperature=0.0
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"[ERROR] litellm call to local ollama failed: {e}")
+        return "{}"
 
 
 def evaluate_with_llm_judge(ground_truth: str, agent_report: str) -> dict:
@@ -96,7 +91,8 @@ def evaluate_with_llm_judge(ground_truth: str, agent_report: str) -> dict:
     response = call_judge(prompt)
 
     try:
-        match = re.search(r'\{.*\}', response, re.DOTALL)
+        # BUG FIX: Use non-greedy match .*? to prevent capturing preamble/postamble
+        match = re.search(r'\{.*?\}', response, re.DOTALL)
         if match:
             return json.loads(match.group(0))
         raise ValueError("No JSON object found in judge output.")
@@ -112,21 +108,20 @@ def evaluate_with_llm_judge(ground_truth: str, agent_report: str) -> dict:
 
 
 def parse_retrieved_chunks(raw_retrieved_data: str) -> list:
-    """
-    Split the raw retrieved data string back into individual chunk strings.
-    SearchFinancialDatabaseTool joins chunks with '\n\n---\n\n'.
-    Returns a list of chunk strings in retrieval order.
-    """
+    """Split the raw retrieved data string back into individual chunk strings."""
     if not raw_retrieved_data or not raw_retrieved_data.strip():
         return []
     return [chunk.strip() for chunk in raw_retrieved_data.split("\n\n---\n\n") if chunk.strip()]
 
 
 def run_full_evaluation():
-    # __file__-relative path — works regardless of current working directory.
     eval_path = os.path.join(_EVAL_DIR, "eval_queries.json")
-    with open(eval_path, "r") as f:
-        test_cases = json.load(f)
+    try:
+        with open(eval_path, "r") as f:
+            test_cases = json.load(f)
+    except FileNotFoundError:
+        print(f"[ERROR] Could not find {eval_path}")
+        sys.exit(1)
 
     results_table = []
 
@@ -149,16 +144,12 @@ def run_full_evaluation():
         safe_report = str(final_report).split("# Confidence Score")[0].strip()
 
         # ── 1. Deterministic guardrail check (risk_eval) ──────────────────────
-        # expected_to_flag = True for refusal cases OR if the monitor raised a flag.
-        expected_to_flag = is_refusal_case or "[RISK FLAG DETECTED]" in safe_report
+        # BUG FIX: Directly pass the boolean intended for evaluation
         risk_result = evaluate_risk_compliance(safe_report, expected_to_flag=is_refusal_case)
-
         print(f"\n[Guardrail Check] {risk_result['verdict']} — {risk_result['notes']}")
 
         # ── 2. Retrieval quality metrics (retrieval_eval) ─────────────────────
         if is_refusal_case:
-            # For refusal cases there are no DB chunks — the pipeline output itself
-            # is the "retrieval". Check the full output string for refusal keywords.
             combined_text = (raw_retrieved_data + " " + safe_report)
             p_at_k  = keyword_hit_rate_flat(combined_text, keywords)
             hr_at_k = 1 if p_at_k > 0 else 0
@@ -179,13 +170,10 @@ def run_full_evaluation():
             "company":             company,
             "query":               query[:55] + ("..." if len(query) > 55 else ""),
             "is_refusal_case":     is_refusal_case,
-            # Retrieval metrics
             "precision_at_k":      round(p_at_k, 2),
             "hit_rate_at_k":       hr_at_k,
-            # Guardrail check
             "guardrail_passed":    risk_result["passed_guardrail"],
             "guardrail_verdict":   risk_result["verdict"],
-            # LLM judge scores
             "factual_score":       scores.get("factual_score", 0),
             "hallucination_score": scores.get("hallucination_score", 0),
             "format_score":        scores.get("format_score", 0),
@@ -217,21 +205,22 @@ def run_full_evaluation():
 
     # ── Aggregate stats ───────────────────────────────────────────────────────
     n = len(results_table)
-    print("\n--- Aggregate ---")
-    print(f"  Cases evaluated       : {n}")
-    print(f"  Avg Precision@6       : {sum(r['precision_at_k'] for r in results_table)/n:.2f}")
-    print(f"  Avg Hit Rate@6        : {sum(r['hit_rate_at_k'] for r in results_table)/n:.2f}")
-    print(f"  Guardrail pass rate   : {sum(r['guardrail_passed'] for r in results_table)/n:.0%}")
-    print(f"  Avg Factual Score     : {sum(r['factual_score'] for r in results_table)/n:.2f}")
-    print(f"  Avg Hallucination     : {sum(r['hallucination_score'] for r in results_table)/n:.2f}")
-    print(f"  Avg Format Score      : {sum(r['format_score'] for r in results_table)/n:.2f}")
-    print(f"  Avg Refusal Score     : {sum(r['refusal_score'] for r in results_table)/n:.2f}")
+    if n > 0:
+        print("\n--- Aggregate ---")
+        print(f"  Cases evaluated       : {n}")
+        print(f"  Avg Precision@6       : {sum(r['precision_at_k'] for r in results_table)/n:.2f}")
+        print(f"  Avg Hit Rate@6        : {sum(r['hit_rate_at_k'] for r in results_table)/n:.2f}")
+        print(f"  Guardrail pass rate   : {sum(r['guardrail_passed'] for r in results_table)/n:.0%}")
+        print(f"  Avg Factual Score     : {sum(r['factual_score'] for r in results_table)/n:.2f}")
+        print(f"  Avg Hallucination     : {sum(r['hallucination_score'] for r in results_table)/n:.2f}")
+        print(f"  Avg Format Score      : {sum(r['format_score'] for r in results_table)/n:.2f}")
+        print(f"  Avg Refusal Score     : {sum(r['refusal_score'] for r in results_table)/n:.2f}")
 
-    print("\n--- Judge Reasoning (per case) ---")
-    for r in results_table:
-        print(f"  [{r['idx']}] {r['query'][:50]}")
-        print(f"      Guardrail : {r['guardrail_verdict']}")
-        print(f"      Judge     : {r['judge_reasoning']}")
+        print("\n--- Judge Reasoning (per case) ---")
+        for r in results_table:
+            print(f"  [{r['idx']}] {r['query'][:50]}")
+            print(f"      Guardrail : {r['guardrail_verdict']}")
+            print(f"      Judge     : {r['judge_reasoning']}")
 
 
 if __name__ == "__main__":

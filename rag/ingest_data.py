@@ -1,14 +1,32 @@
 """
 ingest_data.py — Multi-PDF ingestion pipeline.
+Lives at project_root/rag/ingest_data.py
 
-Drop any number of SEC 10-K PDFs into data/raw/ and run this script once.
-Each chunk is stored with metadata (company, ticker, fiscal_year, source_file)
-so the retriever can filter by company when needed.
+Drop any number of SEC 10-K PDFs into project_root/rag/data/raw/ and run:
+    cd project_root/rag
+    python ingest_data.py
+
+Directory layout this script creates/uses:
+    project_root/rag/
+        data/
+            raw/        <- drop your PDFs here
+        chroma_db/      <- vector DB is written here
+        ingest_data.py  <- this file
+
+data_gatherer.py in project_root/agents/ reads from project_root/rag/chroma_db/
+so both files must agree on that path. If you ever move this script, update
+CHROMA_PATH in data_gatherer.py to match.
+
+IMPORTANT — Apple PDF naming:
+    The Apple 10-K may be named '_10-K-2025-As-Filed.pdf', which contains no
+    recognisable company fragment. Rename it before ingesting:
+        mv '_10-K-2025-As-Filed.pdf' 'aapl-10k-2025.pdf'
+    The COMPANY_MAP below also includes the original name as a safety fallback.
 
 Usage:
-    python ingest_data.py                  # ingest all PDFs in data/raw/
-    python ingest_data.py --reset          # wipe DB first, then ingest
-    python ingest_data.py --file tsla.pdf  # ingest a single file only
+    python ingest_data.py                        # ingest all PDFs in data/raw/
+    python ingest_data.py --reset                # wipe DB first, then ingest
+    python ingest_data.py --file aapl-10k-2025.pdf  # ingest a single file
 """
 
 import os
@@ -20,64 +38,70 @@ from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
-# ROOT_DIR always points to the project root regardless of where this script
-# lives (e.g. rag/, scripts/, or the root itself).
-# We walk UP from the script's location until we find the folder that already
-# contains data/raw/, or fall back to the script's own directory.
-def _find_project_root() -> str:
-    candidate = os.path.dirname(os.path.abspath(__file__))
-    for _ in range(6):
-        if os.path.isdir(os.path.join(candidate, "data", "raw")):
-            return candidate
-        parent = os.path.dirname(candidate)
-        if parent == candidate:   # reached filesystem root
-            break
-        candidate = parent
-    # Fallback: use the script's own directory (data/raw/ will be created there)
-    return os.path.dirname(os.path.abspath(__file__))
+# This script lives at project_root/rag/ingest_data.py
+# dirname(__file__) = project_root/rag/
+_RAG_DIR    = os.path.dirname(os.path.abspath(__file__))
+RAW_DIR     = os.path.join(_RAG_DIR, "data", "raw")
+CHROMA_PATH = os.path.join(_RAG_DIR, "chroma_db")
 
-ROOT_DIR    = _find_project_root()
-RAW_DIR     = os.path.join(ROOT_DIR, "data", "raw")
-CHROMA_PATH = os.path.join(ROOT_DIR, "chroma_db")
-
-# Must match model name in data_gatherer.py exactly.
+# Must match model name in agents/data_gatherer.py exactly.
 EMBEDDINGS = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
+
 # ── Company detection ─────────────────────────────────────────────────────────
-# Maps lowercase filename fragments → (company_name, ticker).
-# Add a row here whenever you add a new company.
+# Maps lowercase filename fragments -> (company_name, ticker).
+# Keep this in sync with TICKER_MAP in agents/data_gatherer.py.
 COMPANY_MAP = {
-    "tsla":      ("Tesla, Inc.",           "TSLA"),
-    "tesla":     ("Tesla, Inc.",           "TSLA"),
-    "msft":      ("Microsoft Corporation", "MSFT"),
-    "microsoft": ("Microsoft Corporation", "MSFT"),
-    "aapl":      ("Apple Inc.",            "AAPL"),
-    "apple":     ("Apple Inc.",            "AAPL"),
-    "amzn":      ("Amazon.com, Inc.",      "AMZN"),
-    "amazon":    ("Amazon.com, Inc.",      "AMZN"),
-    "googl":     ("Alphabet Inc.",         "GOOGL"),
-    "alphabet":  ("Alphabet Inc.",         "GOOGL"),
-    "meta":      ("Meta Platforms, Inc.",  "META"),
-    "nvda":      ("NVIDIA Corporation",    "NVDA"),
-    "nvidia":    ("NVIDIA Corporation",    "NVDA"),
+    # Tesla
+    "tsla":                ("Tesla, Inc.",           "TSLA"),
+    "tesla":               ("Tesla, Inc.",           "TSLA"),
+    # Microsoft
+    "msft":                ("Microsoft Corporation", "MSFT"),
+    "microsoft":           ("Microsoft Corporation", "MSFT"),
+    # Apple — canonical fragment AND original SEC filename fallback
+    "aapl":                ("Apple Inc.",            "AAPL"),
+    "apple":               ("Apple Inc.",            "AAPL"),
+    "10-k-2025-as-filed":  ("Apple Inc.",            "AAPL"),  # original filename safety net
+    # Amazon
+    "amzn":                ("Amazon.com, Inc.",      "AMZN"),
+    "amazon":              ("Amazon.com, Inc.",      "AMZN"),
+    # Alphabet / Google
+    "googl":               ("Alphabet Inc.",         "GOOGL"),
+    "alphabet":            ("Alphabet Inc.",         "GOOGL"),
+    # Meta
+    "meta":                ("Meta Platforms, Inc.",  "META"),
+    # NVIDIA
+    "nvda":                ("NVIDIA Corporation",    "NVDA"),
+    "nvidia":              ("NVIDIA Corporation",    "NVDA"),
 }
 
+
 def detect_company(filename: str) -> tuple:
+    """
+    Detect company name and ticker from a PDF filename.
+    Sorts fragments longest-first so specific patterns match before short ones.
+    Falls back to uppercased filename stem with a warning.
+    """
     lower = filename.lower()
-    for fragment, (name, ticker) in COMPANY_MAP.items():
+    for fragment in sorted(COMPANY_MAP.keys(), key=len, reverse=True):
         if fragment in lower:
-            return name, ticker
+            return COMPANY_MAP[fragment]
+
     stem = os.path.splitext(filename)[0].upper()
-    print(f"  Warning: Unknown company for '{filename}'. Storing as ticker='{stem}'.")
+    print(f"  [WARNING] Unknown company for '{filename}'. Storing as ticker='{stem}'.")
+    print(f"  [WARNING] Add a fragment for this file to COMPANY_MAP in ingest_data.py")
+    print(f"  [WARNING] AND to TICKER_MAP in agents/data_gatherer.py.")
     return stem, stem
 
+
 def detect_fiscal_year(filename: str, pdf_path: str = None) -> str:
-    # 1. Try filename first (fastest)
+    """Detect fiscal year from filename, then from first 3 PDF pages as fallback."""
     match = re.search(r'(20\d{2})', filename)
     if match:
         return match.group(1)
-    # 2. Scan first 3 pages of the PDF as fallback
+
     if pdf_path:
         try:
             with pdfplumber.open(pdf_path) as pdf:
@@ -89,12 +113,19 @@ def detect_fiscal_year(filename: str, pdf_path: str = None) -> str:
                     m = re.search(r'for the year ended[^\d]*(20\d{2})', text, re.IGNORECASE)
                     if m:
                         return m.group(1)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [WARNING] Could not scan PDF for fiscal year: {e}")
+
     return "unknown"
+
 
 # ── PDF extraction ────────────────────────────────────────────────────────────
 def extract_documents(pdf_path: str) -> list:
+    """
+    Extract text and table chunks from a PDF.
+    Company name and ticker are prepended to every chunk so similarity search
+    always retrieves the right company even on generic financial queries.
+    """
     filename = os.path.basename(pdf_path)
     company_name, ticker = detect_company(filename)
     fiscal_year = detect_fiscal_year(filename, pdf_path)
@@ -114,8 +145,7 @@ def extract_documents(pdf_path: str) -> list:
     with pdfplumber.open(pdf_path) as pdf:
         for i, page in enumerate(pdf.pages):
 
-            # Text chunk — company header prepended so similarity search
-            # always retrieves the right company even on generic queries.
+            # Text chunk
             text = page.extract_text()
             if text and text.strip():
                 content = (
@@ -131,7 +161,10 @@ def extract_documents(pdf_path: str) -> list:
             # Table chunks
             for j, table in enumerate(page.extract_tables()):
                 rows = [
-                    " | ".join(str(cell).replace('\n', ' ') if cell else "" for cell in row)
+                    " | ".join(
+                        str(cell).replace('\n', ' ') if cell else ""
+                        for cell in row
+                    )
                     for row in table
                 ]
                 table_str = "\n".join(rows)
@@ -151,6 +184,7 @@ def extract_documents(pdf_path: str) -> list:
     print(f"  Extracted {len(docs)} chunks.")
     return docs
 
+
 # ── DB helpers ────────────────────────────────────────────────────────────────
 def get_already_ingested(db: Chroma) -> set:
     try:
@@ -159,19 +193,23 @@ def get_already_ingested(db: Chroma) -> set:
     except Exception:
         return set()
 
+
 def ingest_pdf(pdf_path: str, db: Chroma) -> int:
     docs = extract_documents(pdf_path)
     if not docs:
         print("  No content extracted — skipping.")
         return 0
-    # Batch to avoid memory spikes on large PDFs
     batch_size = 100
     for start in range(0, len(docs), batch_size):
         db.add_documents(docs[start : start + batch_size])
     return len(docs)
 
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def run(target_file=None, reset=False):
+    print(f"[INFO] RAW_DIR     : {RAW_DIR}")
+    print(f"[INFO] CHROMA_PATH : {CHROMA_PATH}")
+
     if reset and os.path.exists(CHROMA_PATH):
         shutil.rmtree(CHROMA_PATH)
         print(f"Wiped existing DB at {CHROMA_PATH}")
@@ -182,7 +220,6 @@ def run(target_file=None, reset=False):
     if already_done:
         print(f"Already in DB: {', '.join(sorted(already_done))}")
 
-    # Collect PDFs to process
     if target_file:
         pdf_paths = [
             target_file if os.path.isabs(target_file)
@@ -197,12 +234,17 @@ def run(target_file=None, reset=False):
         ]
 
     if not pdf_paths:
-        print(f"No PDFs found in {RAW_DIR}/  — drop your 10-K PDFs there and re-run.")
+        print(f"\nNo PDFs found in {RAW_DIR}/")
+        print("Drop your 10-K PDFs there and re-run.")
+        print("\nNaming convention:")
+        print("  Tesla   -> tsla-10k-2023.pdf")
+        print("  Apple   -> aapl-10k-2025.pdf   (rename from '_10-K-2025-As-Filed.pdf')")
+        print("  MSFT    -> msft-10k-2025.pdf")
         return
 
     total_chunks = 0
-    skipped = []
-    processed = []
+    skipped      = []
+    processed    = []
 
     for pdf_path in pdf_paths:
         filename = os.path.basename(pdf_path)
@@ -222,21 +264,23 @@ def run(target_file=None, reset=False):
         total_chunks += n
         processed.append((filename, n))
 
-    # Summary
     print(f"\n{'='*60}")
     print("INGESTION COMPLETE")
     print(f"{'='*60}")
     for fname, n in processed:
         _, ticker = detect_company(fname)
-        print(f"  {ticker:6s} | {fname:45s} | {n:4d} chunks")
+        print(f"  {ticker:6s} | {fname:50s} | {n:4d} chunks")
     if skipped:
         print(f"\n  Skipped (already in DB): {', '.join(skipped)}")
     print(f"\n  Total new chunks : {total_chunks}")
     print(f"  DB location      : {CHROMA_PATH}")
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ingest SEC 10-K PDFs into ChromaDB.")
-    parser.add_argument("--file",  type=str, default=None, help="Ingest a single PDF by name or path.")
-    parser.add_argument("--reset", action="store_true",    help="Wipe the DB before ingesting.")
+    parser.add_argument("--file",  type=str, default=None,
+                        help="Ingest a single PDF by name or absolute path.")
+    parser.add_argument("--reset", action="store_true",
+                        help="Wipe the DB before ingesting.")
     args = parser.parse_args()
     run(target_file=args.file, reset=args.reset)

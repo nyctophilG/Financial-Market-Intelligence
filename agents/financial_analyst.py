@@ -2,17 +2,20 @@ import os
 from crewai import Agent, LLM
 
 
-# FIX #1: load_prompt now uses the `filename` parameter.
-# The old version hardcoded 'analyst_prompt.txt' and ignored whatever was passed in.
 def load_prompt(filename: str) -> str:
-    """Dynamically loads prompt text from the prompts directory."""
+    """
+    Loads a prompt file from project_root/prompts/<filename>.
+    project_root is two levels up from this file:
+        project_root/agents/financial_analyst.py  ->  project_root/
+    """
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    prompt_path = os.path.join(root_dir, 'prompts', filename)  # <-- FIXED: use param
+    prompt_path = os.path.join(root_dir, 'prompts', filename)
     try:
         with open(prompt_path, 'r', encoding='utf-8') as file:
             return file.read()
     except FileNotFoundError:
-        print(f"Warning: {filename} not found. Falling back to default.")
+        print(f"[WARNING] Prompt file not found: {prompt_path}")
+        print(f"[WARNING] Falling back to default. Check that '{filename}' exists in project_root/prompts/")
         return "You are a helpful AI assistant."
 
 
@@ -46,7 +49,7 @@ if __name__ == "__main__":
     simulated_gatherer_output = """
     Tesla Inc. FY2023 Financial Summary: Total automotive revenues were $82,419 million.
     Services and other revenues were $8,319 million.
-    Risk Factors: Tesla faces supply and pricing risks for raw materials including 
+    Risk Factors: Tesla faces supply and pricing risks for raw materials including
     lithium, nickel, and copper due to market fluctuations and industry-wide shortages.
     """
 

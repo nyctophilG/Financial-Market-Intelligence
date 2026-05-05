@@ -20,10 +20,10 @@ RAW_DIR       = os.path.join(PROJECT_ROOT, "data", "raw")
 PROCESSED_DIR = os.path.join(PROJECT_ROOT, "data", "processed")
 
 # Must match data_gatherer.py exactly:
-# CHROMA_PATH = os.path.join(os.path.dirname(__file__), "../chroma_db")
-# __file__ there = <project_root>/agents/data_gatherer.py
-# so CHROMA_PATH = <project_root>/agents/../chroma_db = <project_root>/chroma_db
-CHROMA_DIR = os.path.normpath(os.path.join(PROJECT_ROOT, "agents", "..", "chroma_db"))
+# CHROMA_PATH = os.path.join(_PROJECT_ROOT, "rag", "chroma_db")
+# _PROJECT_ROOT there = project_root/agents/../../ = project_root
+# So the DB lives at project_root/rag/chroma_db — NOT project_root/chroma_db
+CHROMA_DIR = os.path.normpath(os.path.join(PROJECT_ROOT, "rag", "chroma_db"))
 
 os.makedirs(RAW_DIR,       exist_ok=True)
 os.makedirs(PROCESSED_DIR, exist_ok=True)
@@ -169,6 +169,13 @@ def call_ollama(prompt: str, system: str = "") -> str:
 def run_crewai(query: str) -> dict:
     result = {"response": "", "error": ""}
     try:
+        # Ensure agents/ is on sys.path so orchestrator.py's bare imports
+        # (from data_gatherer import ...) resolve correctly regardless of
+        # how/where streamlit launches the process.
+        agents_dir = os.path.join(PROJECT_ROOT, "agents")
+        if agents_dir not in sys.path:
+            sys.path.insert(0, agents_dir)
+
         from agents.orchestrator import run_financial_analysis
 
         n = get_chroma_doc_count()
@@ -183,9 +190,18 @@ def run_crewai(query: str) -> dict:
             )
             return result
 
-        crew_result = run_financial_analysis(query)
-        raw = getattr(crew_result, "raw", None) or str(crew_result or "")
-        result["response"] = raw.strip()
+        # run_financial_analysis returns a TUPLE: (final_report_str, raw_retrieved_data)
+        # Unpack it explicitly — never call str() on the whole tuple.
+        pipeline_output = run_financial_analysis(query)
+
+        if isinstance(pipeline_output, tuple):
+            final_report, _ = pipeline_output   # discard raw_retrieved_data
+        else:
+            # Safety fallback in case signature changes
+            final_report = getattr(pipeline_output, "raw", None) or str(pipeline_output)
+
+        # final_report is already a plain string — strip whitespace only
+        result["response"] = str(final_report).strip()
 
         if not result["response"]:
             result["error"]    = "empty_output"
